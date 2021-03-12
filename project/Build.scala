@@ -74,8 +74,8 @@ object Build {
    *  scala-library.
    */
   def stdlibVersion(implicit mode: Mode): String = mode match {
-    case NonBootstrapped => "2.13.4"
-    case Bootstrapped => "2.13.4"
+    case NonBootstrapped => "2.13.5"
+    case Bootstrapped => "2.13.5"
   }
 
   val dottyOrganization = "org.scala-lang"
@@ -100,6 +100,8 @@ object Build {
   val sbtDottyVersion = {
     if (isRelease) baseSbtDottyVersion else baseSbtDottyVersion + "-SNAPSHOT"
   }
+
+  val sbtCommunityBuildVersion = "0.1.0-SNAPSHOT"
 
   val agentOptions = List(
     // "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
@@ -281,7 +283,8 @@ object Build {
   )
 
   // Settings used when compiling dotty with a non-bootstrapped dotty
-  lazy val commonBootstrappedSettings = commonDottySettings ++ Seq(
+  lazy val commonBootstrappedSettings = commonDottySettings ++ NoBloopExport.settings ++ Seq(
+    bspEnabled := false,
     unmanagedSourceDirectories in Compile += baseDirectory.value / "src-bootstrapped",
 
     version := dottyVersion,
@@ -345,6 +348,7 @@ object Build {
   )
 
   lazy val commonBenchmarkSettings = Seq(
+    Jmh / bspEnabled := false,
     mainClass in (Jmh, run) := Some("dotty.tools.benchmarks.Bench"), // custom main for jmh:run
     javaOptions += "-DBENCH_COMPILER_CLASS_PATH=" + Attributed.data((fullClasspath in (`scala3-bootstrapped`, Compile)).value).mkString("", File.pathSeparator, ""),
     javaOptions += "-DBENCH_CLASS_PATH=" + Attributed.data((fullClasspath in (`scala3-library-bootstrapped`, Compile)).value).mkString("", File.pathSeparator, "")
@@ -417,9 +421,10 @@ object Build {
       ),
 
       // For convenience, change the baseDirectory when running the compiler
-      baseDirectory in (Compile, run) := baseDirectory.value / "..",
+      (Compile / forkOptions) := (Compile / forkOptions).value.withWorkingDirectory((ThisBuild / baseDirectory).value),
+      (Compile / run / forkOptions) := (Compile / run / forkOptions).value.withWorkingDirectory((ThisBuild / baseDirectory).value),
       // And when running the tests
-      baseDirectory in Test := baseDirectory.value / "..",
+      (Test / forkOptions) := (Test / forkOptions).value.withWorkingDirectory((ThisBuild / baseDirectory).value),
 
       test in Test := {
         // Exclude VulpixMetaTests
@@ -493,6 +498,8 @@ object Build {
           (testOnly in Test).toTask(cmd)
         }
       }.evaluated,
+
+      Compile / mainClass := Some("dotty.tools.dotc.Main"),
 
       scala := {
         val args: List[String] = spaceDelimited("<arg>").parsed.toList
@@ -1165,6 +1172,11 @@ object Build {
     sources.in(Test) := Nil
   )
 
+  def scalaDoc(implicit mode: Mode): Project = mode match {
+    case NonBootstrapped => `scaladoc-nonBootstrapped`
+    case Bootstrapped => scaladoc
+  }
+
   lazy val `scaladoc-testcases` = project.in(file("scaladoc-testcases")).asScaladocTestcases
 
   lazy val `scaladoc-js` = project.in(file("scaladoc-js")).asScaladocJs
@@ -1225,6 +1237,7 @@ object Build {
       version := "0.1.17-snapshot", // Keep in sync with package.json
       autoScalaLibrary := false,
       publishArtifact := false,
+      bspEnabled := false,
       resourceGenerators in Compile += Def.task {
         // Resources that will be copied when bootstrapping a new project
         val buildSbtFile = baseDirectory.value / "out" / "build.sbt"
@@ -1272,6 +1285,45 @@ object Build {
       }.dependsOn(compile in Compile).evaluated
     )
 
+  lazy val `sbt-community-build` = project.in(file("sbt-community-build")).
+    enablePlugins(SbtPlugin).
+    settings(commonSettings).
+    settings(
+      name := "sbt-community-build",
+      version := sbtCommunityBuildVersion,
+      organization := "ch.epfl.lamp",
+      sbtTestDirectory := baseDirectory.value / "sbt-test",
+      scriptedLaunchOpts ++= Seq(
+        "-Dplugin.version=" + version.value,
+        "-Dplugin.scalaVersion=" + dottyVersion,
+        "-Dplugin.scalaJSVersion=" + scalaJSVersion,
+        "-Dplugin.sbtDottyVersion=" + sbtDottyVersion,
+        "-Ddotty.communitybuild.dir=" + baseDirectory.value / "target",
+        "-Dsbt.boot.directory=" + ((baseDirectory in ThisBuild).value / ".sbt-scripted").getAbsolutePath // Workaround sbt/sbt#3469
+      ),
+      // Pass along ivy home and repositories settings to sbt instances run from the tests
+      scriptedLaunchOpts ++= {
+        val repositoryPath = (io.Path.userHome / ".sbt" / "repositories").absolutePath
+        s"-Dsbt.repository.config=$repositoryPath" ::
+        ivyPaths.value.ivyHome.map("-Dsbt.ivy.home=" + _.getAbsolutePath).toList
+      },
+      scriptedBufferLog := true,
+      scriptedBatchExecution := true,
+      scripted := scripted.dependsOn(
+        publishLocal in `scala3-sbt-bridge`,
+        publishLocal in `scala3-interfaces`,
+        publishLocal in `scala3-compiler-bootstrapped`,
+        publishLocal in `scala3-library-bootstrapped`,
+        publishLocal in `scala3-library-bootstrappedJS`,
+        publishLocal in `tasty-core-bootstrapped`,
+        publishLocal in `scala3-staging`,
+        publishLocal in `scala3-tasty-inspector`,
+        publishLocal in `scaladoc`,
+        publishLocal in `scala3-bootstrapped`,
+        publishLocal in `sbt-dotty`,
+      ).evaluated
+   )
+
   val prepareCommunityBuild = taskKey[Unit]("Publish local the compiler and the sbt plugin. Also store the versions of the published local artefacts in two files, community-build/{scala3-bootstrapped.version,sbt-dotty-sbt}.")
 
   lazy val `community-build` = project.in(file("community-build")).
@@ -1289,13 +1341,16 @@ object Build {
         (publishLocal in `sbt-dotty`).value
         (publishLocal in `scala3-bootstrapped`).value
         (publishLocal in `scala3-library-bootstrappedJS`).value
+        (publishLocal in `sbt-community-build`).value
         // (publishLocal in `scala3-staging`).value
         val pluginText =
           s"""updateOptions in Global ~= (_.withLatestSnapshots(false))
              |addSbtPlugin("ch.epfl.lamp" % "sbt-dotty" % "$sbtDottyVersion")
+             |addSbtPlugin("ch.epfl.lamp" % "sbt-community-build" % "$sbtCommunityBuildVersion")
              |addSbtPlugin("org.scala-js" % "sbt-scalajs" % "$scalaJSVersion")""".stripMargin
         IO.write(baseDirectory.value / "sbt-dotty-sbt", pluginText)
         IO.write(baseDirectory.value / "scala3-bootstrapped.version", dottyVersion)
+        IO.delete(baseDirectory.value / "dotty-community-build-deps")  // delete any stale deps file
       },
       testOptions in Test += Tests.Argument(
         TestFrameworks.JUnit,
@@ -1415,7 +1470,7 @@ object Build {
 
     // FIXME: we do not aggregate `bin` because its tests delete jars, thus breaking other tests
     def asDottyRoot(implicit mode: Mode): Project = project.withCommonSettings.
-      aggregate(`scala3-interfaces`, dottyLibrary, dottyCompiler, tastyCore, scaladoc, `scala3-sbt-bridge`).
+      aggregate(`scala3-interfaces`, dottyLibrary, dottyCompiler, tastyCore, `scaladoc-nonBootstrapped`, `scala3-sbt-bridge`).
       bootstrappedAggregate(`scala3-language-server`, `scala3-staging`, `scala3-tasty-inspector`,
         `scala3-library-bootstrappedJS`, scaladoc).
       dependsOn(tastyCore).
@@ -1582,7 +1637,9 @@ object Build {
                 "github::https://github.com/lampepfl/dotty," +
                 "gitter::https://gitter.im/scala/scala," +
                 "twitter::https://twitter.com/scala_lang",
-              s"-source-links:$stdLibRoot=github://scala/scala/v${stdlibVersion(Bootstrapped)}#src/library",
+              s"-source-links:" +
+                s"$stdLibRoot=github://scala/scala/v${stdlibVersion(Bootstrapped)}#src/library," +
+                s"docs=github://lampepfl/dotty/master#docs",
               "-doc-root-content", docRootFile.toString
             )
           ))
@@ -1609,10 +1666,8 @@ object Build {
         Compile / resourceGenerators += Def.task {
           val cssDesitnationFile = (Compile / resourceManaged).value / "dotty_res" / "styles" / "scaladoc-searchbar.css"
           val cssSourceFile = (resourceDirectory in Compile in `scaladoc-js`).value / "scaladoc-searchbar.css"
-          FileFunction.cached(streams.value.cacheDirectory / "css-cache") { (in: Set[File]) =>
-            in.headOption.map(sbt.IO.copyFile(_, cssDesitnationFile))
-            Set(cssDesitnationFile)
-          }.apply(Set(cssSourceFile)).toSeq
+          sbt.IO.copyFile(cssSourceFile, cssDesitnationFile)
+          Seq(cssDesitnationFile)
         }.taskValue,
         testDocumentationRoot := (baseDirectory.value / "test-documentations").getAbsolutePath,
         buildInfoPackage in Test := "dotty.tools.scaladoc.test",
@@ -1637,7 +1692,7 @@ object Build {
     def asDist(implicit mode: Mode): Project = project.
       enablePlugins(PackPlugin).
       withCommonSettings.
-      dependsOn(`scala3-interfaces`, dottyCompiler, dottyLibrary, tastyCore, `scala3-staging`, `scala3-tasty-inspector`, scaladoc).
+      dependsOn(`scala3-interfaces`, dottyCompiler, dottyLibrary, tastyCore, `scala3-staging`, `scala3-tasty-inspector`, scalaDoc).
       settings(commonDistSettings).
       bootstrappedSettings(
         target := baseDirectory.value / "target" // override setting in commonBootstrappedSettings

@@ -15,6 +15,7 @@ import TreeInfo._
 import ProtoTypes._
 import Scopes._
 import CheckRealizable._
+import NullOpsDecorator._
 import ErrorReporting.errorTree
 import rewrites.Rewrites.patch
 import util.Spans.Span
@@ -576,8 +577,8 @@ object Checking {
           }
           tp.derivedClassInfo(
             prefix = apply(tp.prefix),
-            classParents =
-              tp.parents.map(p => transformedParent(apply(p)))
+            declaredParents =
+              tp.declaredParents.map(p => transformedParent(apply(p)))
             )
         case _ =>
           mapOver(tp)
@@ -755,6 +756,7 @@ trait Checking {
       case Some(prefix) =>
         val required =
           if prefix == nme.experimental then defn.LanguageExperimentalModule
+          else if prefix == nme.deprecated then defn.LanguageDeprecatedModule
           else defn.LanguageModule
         if path.symbol != required then
           report.error(em"import looks like a language import, but refers to something else: ${path.symbol.showLocated}", path.srcPos)
@@ -1180,7 +1182,7 @@ trait Checking {
         report.error(i"enum case does not extend its enum $enumCls", enumCase.srcPos)
         cls.info match
           case info: ClassInfo =>
-            cls.info = info.derivedClassInfo(classParents = enumCls.typeRefApplied :: info.classParents)
+            cls.info = info.derivedClassInfo(declaredParents = enumCls.typeRefApplied :: info.declaredParents)
           case _ =>
 
     val enumCase =

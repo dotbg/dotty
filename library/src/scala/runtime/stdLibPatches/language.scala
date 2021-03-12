@@ -38,6 +38,22 @@ object language:
     object genericNumberLiterals
   end experimental
 
+  /** The deprecated object contains features that are no longer officially suypported in Scala.
+   *  Features in this object are slated for removal. New code should not use them and
+   *  old code should migrate away from them.
+   */
+  object deprecated:
+
+    /** Symbol literals have been deprecated since 2.13. Since Scala 3.0 they
+     *  are no longer an official part of Scala. For compatibility with legacy software,
+     *  symbol literals are still supported with a language import, but new software
+     *  should not use them.
+     */
+    object symbolLiterals
+  end deprecated
+
+  object symbolLiterals
+
   /** Where imported, auto-tupling is disabled.
     *
     * '''Why control the feature?''' Auto-tupling can lead to confusing and
@@ -77,6 +93,11 @@ object language:
    */
   object adhocExtensions
 
+  /** Unsafe Nulls fot Explicit Nulls
+    * Inside the "unsafe" scope, `Null` is considered as a subtype of all reference types.
+    *
+    * @see [[http://dotty.epfl.ch/docs/reference/other-new-features/explicit-nulls.html]]
+    */
   object unsafeNulls
 
   object future

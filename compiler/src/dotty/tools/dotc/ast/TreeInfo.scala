@@ -251,14 +251,16 @@ trait TreeInfo[T >: Untyped <: Type] { self: Trees.Instance[T] =>
     case TypeDefs(_) => true
     case _ => isUsingClause(params)
 
+  private val languageSubCategories = Set(nme.experimental, nme.deprecated)
+
   /** If `path` looks like a language import, `Some(name)` where name
    *  is `experimental` if that sub-module is imported, and the empty
    *  term name otherwise.
    */
   def languageImport(path: Tree): Option[TermName] = path match
-    case Select(p1, nme.experimental) =>
+    case Select(p1, name: TermName) if languageSubCategories.contains(name) =>
       languageImport(p1) match
-        case Some(EmptyTermName) => Some(nme.experimental)
+        case Some(EmptyTermName) => Some(name)
         case _ => None
     case p1: RefTree if p1.name == nme.language =>
       p1.qualifier match
@@ -936,10 +938,15 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
      *  The result can be the contents of a term or type quote, which
      *  will return a term or type tree respectively.
      */
-    def unapply(tree: tpd.Tree)(using Context): Option[tpd.Tree] = tree match {
-      case tree: GenericApply if tree.symbol.isQuote => Some(tree.args.head)
-      case _ => None
-    }
+    def unapply(tree: tpd.Apply)(using Context): Option[tpd.Tree] =
+      if tree.symbol == defn.QuotedRuntime_exprQuote then
+        // quoted.runtime.Expr.quote[T](<body>)
+        Some(tree.args.head)
+      else if tree.symbol == defn.QuotedTypeModule_of then
+        // quoted.Type.of[<body>](quotes)
+        val TypeApply(_, body :: _) = tree.fun
+        Some(body)
+      else None
   }
 
   /** Extractors for splices */

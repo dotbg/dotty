@@ -40,8 +40,9 @@ class CompilationTests {
       compileFilesInDir("tests/new", defaultOptions),
       compileFilesInDir("tests/pos-scala2", scala2CompatMode),
       compileFilesInDir("tests/pos-custom-args/erased", defaultOptions.and("-Yerased-terms")),
-      compileFilesInDir("tests/pos", defaultOptions),
+      compileFilesInDir("tests/pos", defaultOptions.and("-Ysafe-init")),
       compileFilesInDir("tests/pos-deep-subtype", allowDeepSubtypes),
+      compileDir("tests/pos-special/java-param-names", defaultOptions.withJavacOnlyOptions("-parameters")),
       compileFile(
         // succeeds despite -Xfatal-warnings because of -nowarn
         "tests/neg-custom-args/fatal-warnings/xfatalWarnings.scala",
@@ -109,7 +110,8 @@ class CompilationTests {
       compileFile("tests/pos/i0239.scala", defaultOptions),
       compileFile("tests/pos/anonClassSubtyping.scala", defaultOptions),
       compileFile("tests/pos/extmethods.scala", defaultOptions),
-      compileFile("tests/pos/companions.scala", defaultOptions)
+      compileFile("tests/pos/companions.scala", defaultOptions),
+      compileFile("tests/pos/main.scala", defaultOptions)
     ).times(2).checkCompile()
   }
 
@@ -144,6 +146,7 @@ class CompilationTests {
       compileFile("tests/neg-custom-args/i4372.scala", allowDeepSubtypes),
       compileFile("tests/neg-custom-args/i1754.scala", allowDeepSubtypes),
       compileFile("tests/neg-custom-args/i9517.scala", defaultOptions.and("-Xprint-types")),
+      compileFile("tests/neg-custom-args/i11637.scala", defaultOptions.and("-explain")),
       compileFile("tests/neg-custom-args/interop-polytypes.scala", allowDeepSubtypes.and("-Yexplicit-nulls")),
       compileFile("tests/neg-custom-args/conditionalWarnings.scala", allowDeepSubtypes.and("-deprecation").and("-Xfatal-warnings")),
       compileFilesInDir("tests/neg-custom-args/isInstanceOf", allowDeepSubtypes and "-Xfatal-warnings"),
@@ -166,7 +169,8 @@ class CompilationTests {
       compileFile("tests/neg-custom-args/i5498-postfixOps.scala", defaultOptions withoutLanguageFeature "postfixOps"),
       compileFile("tests/neg-custom-args/deptypes.scala", defaultOptions.and("-language:experimental.dependent")),
       compileFile("tests/neg-custom-args/matchable.scala", defaultOptions.and("-Xfatal-warnings", "-source", "future")),
-      compileFile("tests/neg-custom-args/i7314.scala", defaultOptions.and("-Xfatal-warnings", "-source", "future"))
+      compileFile("tests/neg-custom-args/i7314.scala", defaultOptions.and("-Xfatal-warnings", "-source", "future")),
+      compileFile("tests/neg-custom-args/feature-shadowing.scala", defaultOptions.and("-Xfatal-warnings", "-feature")),
     ).checkExpectedErrors()
   }
 
@@ -187,7 +191,7 @@ class CompilationTests {
       compileFile("tests/run-custom-args/defaults-serizaliable-no-forwarders.scala", defaultOptions and "-Xmixin-force-forwarders:false"),
       compileFilesInDir("tests/run-custom-args/erased", defaultOptions.and("-Yerased-terms")),
       compileFilesInDir("tests/run-deep-subtype", allowDeepSubtypes),
-      compileFilesInDir("tests/run", defaultOptions)
+      compileFilesInDir("tests/run", defaultOptions.and("-Ysafe-init"))
     ).checkRuns()
   }
 
@@ -292,7 +296,8 @@ class CompilationTests {
     implicit val testGroup: TestGroup = TestGroup("explicitNullsNeg")
     aggregateTests(
       compileFilesInDir("tests/explicit-nulls/neg", explicitNullsOptions),
-      compileFilesInDir("tests/explicit-nulls/neg-patmat", explicitNullsOptions and "-Xfatal-warnings")
+      compileFilesInDir("tests/explicit-nulls/neg-patmat", explicitNullsOptions and "-Xfatal-warnings"),
+      compileFilesInDir("tests/explicit-nulls/unsafe-common", explicitNullsOptions),
     )
   }.checkExpectedErrors()
 
@@ -300,7 +305,8 @@ class CompilationTests {
     implicit val testGroup: TestGroup = TestGroup("explicitNullsPos")
     aggregateTests(
       compileFilesInDir("tests/explicit-nulls/pos", explicitNullsOptions),
-      compileFilesInDir("tests/explicit-nulls/pos-separate", explicitNullsOptions)
+      compileFilesInDir("tests/explicit-nulls/pos-separate", explicitNullsOptions),
+      compileFilesInDir("tests/explicit-nulls/unsafe-common", explicitNullsOptions and "-language:unsafeNulls"),
     )
   }.checkCompile()
 
@@ -310,24 +316,13 @@ class CompilationTests {
   }.checkRuns()
 
   // initialization tests
-  @Test def checkInitNeg: Unit = {
+  @Test def checkInit: Unit = {
     implicit val testGroup: TestGroup = TestGroup("checkInit")
-    val options = defaultOptions.and("-Ycheck-init", "-Xfatal-warnings")
-    compileFilesInDir("tests/init/neg/", options)
-  }.checkExpectedErrors()
-
-  @Test def checkInitCrash: Unit = {
-    implicit val testGroup: TestGroup = TestGroup("checkInit")
-    val options = defaultOptions.and("-Ycheck-init")
-    compileFilesInDir("tests/init/crash", options)
-  }.checkCompile()
-
-  @Test def checkInitPos: Unit = {
-    implicit val testGroup: TestGroup = TestGroup("checkInit")
-    val options = defaultOptions.and("-Ycheck-init", "-Xfatal-warnings")
-    compileFilesInDir("tests/init/pos", options)
-  }.checkCompile()
-
+    val options = defaultOptions.and("-Ysafe-init", "-Xfatal-warnings")
+    compileFilesInDir("tests/init/neg", options).checkExpectedErrors()
+    compileFilesInDir("tests/init/pos", options).checkCompile()
+    compileFilesInDir("tests/init/crash", options.without("-Xfatal-warnings")).checkCompile()
+  }
 }
 
 object CompilationTests extends ParallelTesting {

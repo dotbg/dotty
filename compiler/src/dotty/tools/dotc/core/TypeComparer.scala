@@ -11,7 +11,7 @@ import collection.mutable
 import util.Stats
 import config.Config
 import config.Feature.migrateTo3
-import config.Printers.{constr, subtyping, gadts, noPrinter}
+import config.Printers.{constr, subtyping, gadts, matchTypes, noPrinter}
 import TypeErasure.{erasedLub, erasedGlb}
 import TypeApplications._
 import Variances.{Variance, variancesConform}
@@ -206,7 +206,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
    *  code would have two extra parameters for each of the many calls that go from
    *  one sub-part of isSubType to another.
    */
-  protected def recur(tp1: Type, tp2: Type): Boolean = trace(s"isSubType ${traceInfo(tp1, tp2)} ${approx.show}", subtyping) {
+  protected def recur(tp1: Type, tp2: Type): Boolean = trace(s"isSubType ${traceInfo(tp1, tp2)}${approx.show}", subtyping) {
 
     def monitoredIsSubType = {
       if (pendingSubTypes == null) {
@@ -390,6 +390,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         }
         def compareTypeParamRef =
           assumedTrue(tp1) ||
+          tp2.match {
+            case tp2: TypeParamRef => constraint.isLess(tp1, tp2)
+            case _ => false
+          } ||
           isSubTypeWhenFrozen(bounds(tp1).hi, tp2) || {
             if (canConstrain(tp1) && !approx.high)
               addConstraint(tp1, tp2, fromBelow = false) && flagNothingBound
@@ -540,11 +544,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           // widening in `fourthTry` before adding to the constraint.
           if (frozenConstraint) recur(tp1, bounds(tp2).lo)
           else isSubTypeWhenFrozen(tp1, tp2)
-        alwaysTrue ||
-        frozenConstraint && (tp1 match {
-          case tp1: TypeParamRef => constraint.isLess(tp1, tp2)
-          case _ => false
-        }) || {
+        alwaysTrue || {
           if (canConstrain(tp2) && !approx.low)
             addConstraint(tp2, tp1.widenExpr, fromBelow = true)
           else fourthTry
@@ -1355,12 +1355,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
      *  for equality would give the wrong result, so we should not use the sets
      *  for comparisons.
      */
-    def canCompare(ts: Set[Type]) = ctx.phase.isTyper || {
-      val hasSkolems = new ExistsAccumulator(_.isInstanceOf[SkolemType]) {
-        override def stopAtStatic = true
-      }
-      !ts.exists(hasSkolems(false, _))
-    }
+    def canCompare(ts: Set[Type]) =
+      ctx.phase.isTyper
+      || !ts.exists(_.existsPart(_.isInstanceOf[SkolemType], stopAtStatic = true))
+
     def verified(result: Boolean): Boolean =
       if Config.checkAtomsComparisons then
         try
@@ -2124,7 +2122,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     }
 
   private def andTypeGen(tp1: Type, tp2: Type, op: (Type, Type) => Type,
-      original: (Type, Type) => Type = _ & _, isErased: Boolean = ctx.erasedTypes): Type = trace(s"glb(${tp1.show}, ${tp2.show})", subtyping, show = true) {
+      original: (Type, Type) => Type = _ & _, isErased: Boolean = ctx.erasedTypes): Type = trace(s"andTypeGen(${tp1.show}, ${tp2.show})", subtyping, show = true) {
     val t1 = distributeAnd(tp1, tp2)
     if (t1.exists) t1
     else {
@@ -2278,13 +2276,6 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       NoType
   }
 
-  /** Show type, handling type types better than the default */
-  private def showType(tp: Type)(using Context) = tp match {
-    case ClassInfo(_, cls, _, _, _) => cls.showLocated
-    case bounds: TypeBounds => "type bounds" + bounds.show
-    case _ => tp.show
-  }
-
   /** A comparison function to pick a winner in case of a merge conflict */
   private def isAsGood(tp1: Type, tp2: Type): Boolean = tp1 match {
     case tp1: ClassInfo =>
@@ -2408,7 +2399,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
    *  property that in all possible contexts, the same match type expression
    *  is either stuck or reduces to the same case.
    */
-  def provablyDisjoint(tp1: Type, tp2: Type)(using Context): Boolean = {
+  def provablyDisjoint(tp1: Type, tp2: Type)(using Context): Boolean = trace(i"provable disjoint $tp1, $tp2", matchTypes) {
     // println(s"provablyDisjoint(${tp1.show}, ${tp2.show})")
 
     def isEnumValueOrModule(ref: TermRef): Boolean =
@@ -2452,7 +2443,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             decompose(cls2, tp2).forall(x => provablyDisjoint(x, tp1))
           else
             false
-      case (AppliedType(tycon1, args1), AppliedType(tycon2, args2)) if tycon1 == tycon2 =>
+      case (AppliedType(tycon1, args1), AppliedType(tycon2, args2))
+      if tycon1.typeSymbol == tycon2.typeSymbol && tycon1 =:= tycon2 =>
         // It is possible to conclude that two types applies are disjoint by
         // looking at covariant type parameters if the said type parameters
         // are disjoin and correspond to fields.
@@ -2523,19 +2515,15 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case (tp1: TermRef, tp2: TermRef) if isEnumValueOrModule(tp1) && isEnumValueOrModule(tp2) =>
         tp1.termSymbol != tp2.termSymbol
       case (tp1: TypeProxy, tp2: TypeProxy) =>
-        provablyDisjoint(matchTypeSuperType(tp1), tp2) || provablyDisjoint(tp1, matchTypeSuperType(tp2))
+        provablyDisjoint(tp1.superType, tp2) || provablyDisjoint(tp1, tp2.superType)
       case (tp1: TypeProxy, _) =>
-        provablyDisjoint(matchTypeSuperType(tp1), tp2)
+        provablyDisjoint(tp1.superType, tp2)
       case (_, tp2: TypeProxy) =>
-        provablyDisjoint(tp1, matchTypeSuperType(tp2))
+        provablyDisjoint(tp1, tp2.superType)
       case _ =>
         false
     }
   }
-
-  /** Restores the buggy match type reduction under -Yunsound-match-types. */
-  private def matchTypeSuperType(tp: TypeProxy): Type =
-    if ctx.settings.YunsoundMatchTypes.value then tp.underlying else tp.superType
 
   protected def explainingTypeComparer = ExplainingTypeComparer(comparerContext)
   protected def trackingTypeComparer = TrackingTypeComparer(comparerContext)
@@ -2547,10 +2535,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     finally myInstance = saved
 
   /** The trace of comparison operations when performing `op` */
-  def explained[T](op: ExplainingTypeComparer => T)(using Context): String =
+  def explained[T](op: ExplainingTypeComparer => T, header: String = "Subtype trace:")(using Context): String =
     val cmp = explainingTypeComparer
     inSubComparer(cmp)(op)
-    cmp.lastTrace()
+    cmp.lastTrace(header)
 
   def tracked[T](op: TrackingTypeComparer => T)(using Context): T =
     inSubComparer(trackingTypeComparer)(op)
@@ -2566,10 +2554,13 @@ object TypeComparer {
     var tpe: Type = NoType
   }
 
-  private[core] def show(res: Any)(using Context): String = res match {
-    case res: printing.Showable if !ctx.settings.YexplainLowlevel.value => res.show
-    case _ => String.valueOf(res)
-  }
+  private[core] def show(res: Any)(using Context): String =
+    if ctx.settings.YexplainLowlevel.value then String.valueOf(res)
+    else res match
+      case ClassInfo(_, cls, _, _, _) => cls.showLocated
+      case bounds: TypeBounds => i"type bounds [$bounds]"
+      case res: printing.Showable => res.show
+      case _ => String.valueOf(res)
 
   /** The approximation state indicates how the pair of types currently compared
    *  relates to the types compared originally.
@@ -2596,8 +2587,8 @@ object TypeComparer {
       def addLow: Repr = approx | LoApprox
       def addHigh: Repr = approx | HiApprox
       def show: String =
-        val lo = if low then "LoApprox" else ""
-        val hi = if high then "HiApprox" else ""
+        val lo = if low then " (left is approximated)" else ""
+        val hi = if high then " (right is approximated)" else ""
         lo ++ hi
   end ApproxState
   type ApproxState = ApproxState.Repr
@@ -2699,8 +2690,8 @@ object TypeComparer {
   def constrainPatternType(pat: Type, scrut: Type)(using Context): Boolean =
     comparing(_.constrainPatternType(pat, scrut))
 
-  def explained[T](op: ExplainingTypeComparer => T)(using Context): String =
-    comparing(_.explained(op))
+  def explained[T](op: ExplainingTypeComparer => T, header: String = "Subtype trace:")(using Context): String =
+    comparing(_.explained(op, header))
 
   def tracked[T](op: TrackingTypeComparer => T)(using Context): T =
     comparing(_.tracked(op))
@@ -2768,7 +2759,7 @@ class TrackingTypeComparer(initctx: Context) extends TypeComparer(initctx) {
      *           None         if the match fails and we should consider the following cases
      *                        because scrutinee and pattern do not overlap
      */
-    def matchCase(cas: Type): Option[Type] = {
+    def matchCase(cas: Type): Option[Type] = trace(i"match case $cas vs $scrut", matchTypes) {
       val cas1 = cas match {
         case cas: HKTypeLambda =>
           caseLambda = constrained(cas)
@@ -2849,17 +2840,20 @@ class ExplainingTypeComparer(initctx: Context) extends TypeComparer(initctx) {
       res
     }
 
+  private def frozenNotice: String =
+    if frozenConstraint then " in frozen constraint" else ""
+
   override def isSubType(tp1: Type, tp2: Type, approx: ApproxState): Boolean =
     def moreInfo =
       if Config.verboseExplainSubtype || ctx.settings.verbose.value
       then s" ${tp1.getClass} ${tp2.getClass}"
       else ""
-    traceIndented(s"${show(tp1)} <:< ${show(tp2)}$moreInfo ${approx.show} ${if (frozenConstraint) " frozen" else ""}") {
+    traceIndented(s"${show(tp1)}  <:  ${show(tp2)}$moreInfo${approx.show}$frozenNotice") {
       super.isSubType(tp1, tp2, approx)
     }
 
   override def recur(tp1: Type, tp2: Type): Boolean =
-    traceIndented(s"${show(tp1)} <:< ${show(tp2)} recur ${if (frozenConstraint) " frozen" else ""}") {
+    traceIndented(s"${show(tp1)}  <:  ${show(tp2)} (recurring)$frozenNotice") {
       super.recur(tp1, tp2)
     }
 
@@ -2883,5 +2877,5 @@ class ExplainingTypeComparer(initctx: Context) extends TypeComparer(initctx) {
       super.addConstraint(param, bound, fromBelow)
     }
 
-  def lastTrace(): String = "Subtype trace:" + { try b.toString finally b.clear() }
+  def lastTrace(header: String): String = header + { try b.toString finally b.clear() }
 }

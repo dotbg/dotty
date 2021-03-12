@@ -18,6 +18,7 @@ import printing.Printer
 import io.AbstractFile
 import util.common._
 import typer.Checking.checkNonCyclic
+import typer.Nullables._
 import transform.SymUtils._
 import PickleBuffer._
 import PickleFormat._
@@ -491,8 +492,6 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         val owner = sym.owner
         if (owner.isClass)
           owner.asClass.enter(sym, symScope(owner))
-        else if (isRefinementClass(owner))
-          symScope(owner).openForMutations.enter(sym)
       }
       sym
     }
@@ -669,12 +668,11 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
     }
     // Cannot use standard `existsPart` method because it calls `lookupRefined`
     // which can cause CyclicReference errors.
-    val isBoundAccumulator = new ExistsAccumulator(isBound) {
-      override def foldOver(x: Boolean, tp: Type): Boolean = tp match {
+    val isBoundAccumulator = new ExistsAccumulator(isBound, stopAtStatic = true, forceLazy = true):
+      override def foldOver(x: Boolean, tp: Type): Boolean = tp match
         case tp: TypeRef => applyToPrefix(x, tp)
         case _ => super.foldOver(x, tp)
-      }
-    }
+
     def removeSingleton(tp: Type): Type =
       if (tp isRef defn.SingletonClass) defn.AnyType else tp
     def elim(tp: Type): Type = tp match {
@@ -728,6 +726,11 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
    *        (if restpe is not a ClassInfoType, a MethodType or a NullaryMethodType, which leaves TypeRef/SingletonType -- the latter would make the polytype a type constructor)
    */
   protected def readType()(using Context): Type = {
+    def select(pre: Type, sym: Symbol): Type =
+      // structural members need to be selected by name, their symbols are only
+      // valid in the synthetic refinement class that defines them.
+      if !pre.isInstanceOf[ThisType] && isRefinementClass(sym.owner) then pre.select(sym.name) else pre.select(sym)
+
     val tag = readByte()
     val end = readNat() + readIndex
     (tag: @switch) match {
@@ -740,7 +743,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
       case SINGLEtpe =>
         val pre = readPrefix()
         val sym = readDisambiguatedSymbolRef(_.info.isParameterless)
-        pre.select(sym)
+        select(pre, sym)
       case SUPERtpe =>
         val thistpe = readTypeRef()
         val supertpe = readTypeRef()
@@ -771,14 +774,16 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
             pre = sym.owner.thisType
           case _ =>
         }
-        val tycon = pre.select(sym)
+        val tycon = select(pre, sym)
         val args = until(end, () => readTypeRef())
         if (sym == defn.ByNameParamClass2x) ExprType(args.head)
         else if (args.nonEmpty) tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args.map(translateTempPoly)))
         else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)
         else tycon
       case TYPEBOUNDStpe =>
-        TypeBounds(readTypeRef(), readTypeRef())
+        val lo = readTypeRef()
+        val hi = readTypeRef()
+        createNullableTypeBounds(lo, hi)
       case REFINEDtpe =>
         val clazz = readSymbolRef().asClass
         val decls = symScope(clazz)
@@ -1257,7 +1262,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
       case TYPEBOUNDStree =>
         val lo = readTreeRef()
         val hi = readTreeRef()
-        TypeBoundsTree(lo, hi)
+        createNullableTypeBoundsTree(lo, hi)
 
       case EXISTENTIALTYPEtree =>
         val tpt = readTreeRef()

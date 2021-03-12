@@ -393,7 +393,9 @@ class OrderingConstraint(private val boundsMap: ParamBounds,
     order(this, param1, param2).checkNonCyclic()
 
   def unify(p1: TypeParamRef, p2: TypeParamRef)(using Context): This =
-    val p1Bounds = (nonParamBounds(p1) & nonParamBounds(p2)).substParam(p2, p1)
+    val bound1 = nonParamBounds(p1).substParam(p2, p1)
+    val bound2 = nonParamBounds(p2).substParam(p2, p1)
+    val p1Bounds = bound1 & bound2
     updateEntry(p1, p1Bounds).replace(p2, p1)
 
 // ---------- Replacements and Removals -------------------------------------
@@ -646,7 +648,7 @@ class OrderingConstraint(private val boundsMap: ParamBounds,
 
 // ---------- toText -----------------------------------------------------
 
-  override def toText(printer: Printer): Text = {
+  private def contentsToText(printer: Printer): Text =
     //Printer.debugPrintUnique = true
     def entryText(tp: Type) = tp match {
       case tp: TypeBounds =>
@@ -655,20 +657,19 @@ class OrderingConstraint(private val boundsMap: ParamBounds,
         " := " ~ tp.toText(printer)
     }
     val indent = 3
-    val header: Text = "Constraint("
-    val uninstVarsText = " uninstVars = " ~
-      Text(uninstVars map (_.toText(printer)), ", ") ~ ";"
+    val uninstVarsText = " uninstantiated variables: " ~
+      Text(uninstVars.map(_.toText(printer)), ", ")
     val constrainedText =
-      " constrained types = " ~ Text(domainLambdas map (_.toText(printer)), ", ")
+      " constrained types: " ~ Text(domainLambdas map (_.toText(printer)), ", ")
     val boundsText =
-      " bounds = " ~ {
+      " bounds: " ~ {
         val assocs =
           for (param <- domainParams)
           yield (" " * indent) ~ param.toText(printer) ~ entryText(entry(param))
         Text(assocs, "\n")
       }
     val orderingText =
-      " ordering = " ~ {
+      " ordering: " ~ {
         val deps =
           for {
             param <- domainParams
@@ -681,8 +682,13 @@ class OrderingConstraint(private val boundsMap: ParamBounds,
         Text(deps, "\n")
       }
     //Printer.debugPrintUnique = false
-    Text.lines(List(header, uninstVarsText, constrainedText, boundsText, orderingText, ")"))
-  }
+    Text.lines(List(uninstVarsText, constrainedText, boundsText, orderingText))
+
+  override def toText(printer: Printer): Text =
+    Text.lines(List("Constraint(", contentsToText(printer), ")"))
+
+  def contentsToString(using Context): String =
+    contentsToText(ctx.printer).show
 
   override def toString: String = {
     def entryText(tp: Type): String = tp match {

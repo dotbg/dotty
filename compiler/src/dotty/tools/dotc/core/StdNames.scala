@@ -199,7 +199,6 @@ object StdNames {
     final val Nothing: N             = "Nothing"
     final val NotNull: N             = "NotNull"
     final val Null: N                = "Null"
-    final val UncheckedNull: N            = "UncheckedNull"
     final val Object: N              = "Object"
     final val FromJavaObject: N      = "<FromJavaObject>"
     final val Product: N             = "Product"
@@ -257,6 +256,7 @@ object StdNames {
     final val DeprecatedATTR: N                   = "Deprecated"
     final val ExceptionsATTR: N                   = "Exceptions"
     final val InnerClassesATTR: N                 = "InnerClasses"
+    final val MethodParametersATTR: N             = "MethodParameters"
     final val LineNumberTableATTR: N              = "LineNumberTable"
     final val LocalVariableTableATTR: N           = "LocalVariableTable"
     final val RuntimeVisibleAnnotationATTR: N     = "RuntimeVisibleAnnotations"   // RetentionPolicy.RUNTIME
@@ -449,6 +449,7 @@ object StdNames {
     val definitions: N          = "definitions"
     val delayedInit: N          = "delayedInit"
     val delayedInitArg: N       = "delayedInit$body"
+    val deprecated: N           = "deprecated"
     val derived: N              = "derived"
     val derives: N              = "derives"
     val doubleHash: N           = "doubleHash"

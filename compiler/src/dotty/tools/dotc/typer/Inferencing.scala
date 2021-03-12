@@ -393,7 +393,7 @@ object Inferencing {
   def maximizeType(tp: Type, span: Span, fromScala2x: Boolean)(using Context): List[Symbol] = {
     Stats.record("maximizeType")
     val vs = variances(tp)
-    val patternBound = new mutable.ListBuffer[Symbol]
+    val patternBindings = new mutable.ListBuffer[(Symbol, TypeParamRef)]
     vs foreachBinding { (tvar, v) =>
       if (v == 1) tvar.instantiate(fromBelow = false)
       else if (v == -1) tvar.instantiate(fromBelow = true)
@@ -406,11 +406,17 @@ object Inferencing {
           // Instead, we simultaneously add them later on.
           val wildCard = newPatternBoundSymbol(UniqueName.fresh(tvar.origin.paramName), bounds, span, addToGadt = false)
           tvar.instantiateWith(wildCard.typeRef)
-          patternBound += wildCard
+          patternBindings += ((wildCard, tvar.origin))
         }
       }
     }
-    val res = patternBound.toList
+    val res = patternBindings.toList.map { (boundSym, _) =>
+      // substitute bounds of pattern bound variables to deal with possible F-bounds
+      for (wildCard, param) <- patternBindings do
+        boundSym.info = boundSym.info.substParam(param, wildCard.typeRef)
+      boundSym
+    }
+
     // We add the created symbols to GADT constraint here.
     if (res.nonEmpty) ctx.gadt.addToConstraint(res)
     res
@@ -482,6 +488,36 @@ object Inferencing {
     }
 
     propagate(accu(SimpleIdentityMap.empty, tp))
+  }
+
+  /** Replace every top-level occurrence of a wildcard type argument by
+    *  a fresh skolem type. The skolem types are of the form $i.CAP, where
+    *  $i is a skolem of type `scala.internal.TypeBox`, and `CAP` is its
+    *  type member. See the documentation of `TypeBox` for a rationale why we do this.
+    */
+  def captureWildcards(tp: Type)(using Context): Type = tp match {
+    case tp @ AppliedType(tycon, args) if tp.hasWildcardArg =>
+      tycon.typeParams match {
+        case tparams @ ((_: Symbol) :: _) =>
+          val boundss = tparams.map(_.paramInfo.substApprox(tparams.asInstanceOf[List[TypeSymbol]], args))
+          val args1 = args.zipWithConserve(boundss) { (arg, bounds) =>
+            arg match {
+              case TypeBounds(lo, hi) =>
+                val skolem = SkolemType(defn.TypeBoxClass.typeRef.appliedTo(lo | bounds.loBound, hi & bounds.hiBound))
+                TypeRef(skolem, defn.TypeBox_CAP)
+              case arg => arg
+            }
+          }
+          tp.derivedAppliedType(tycon, args1)
+        case _ =>
+          tp
+      }
+    case tp: AndOrType => tp.derivedAndOrType(captureWildcards(tp.tp1), captureWildcards(tp.tp2))
+    case tp: RefinedType => tp.derivedRefinedType(captureWildcards(tp.parent), tp.refinedName, tp.refinedInfo)
+    case tp: RecType => tp.derivedRecType(captureWildcards(tp.parent))
+    case tp: LazyRef => captureWildcards(tp.ref)
+    case tp: AnnotatedType => tp.derivedAnnotatedType(captureWildcards(tp.parent), tp.annot)
+    case _ => tp
   }
 }
 

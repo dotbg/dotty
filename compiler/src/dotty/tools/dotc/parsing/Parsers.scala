@@ -17,17 +17,18 @@ import NameKinds.WildcardParamName
 import NameOps._
 import ast.{Positioned, Trees}
 import ast.Trees._
+import typer.ImportInfo
 import StdNames._
 import util.Spans._
 import Constants._
-import Symbols.defn
+import Symbols.{defn, NoSymbol}
 import ScriptParsers._
 import Decorators._
 import util.Chars
 import scala.annotation.{tailrec, switch}
 import rewrites.Rewrites.{patch, overlapsPatch}
 import reporting._
-import config.Feature.{sourceVersion, migrateTo3, dependentEnabled}
+import config.Feature.{sourceVersion, migrateTo3, dependentEnabled, symbolLiteralsEnabled}
 import config.SourceVersion._
 import config.SourceVersion
 
@@ -36,14 +37,6 @@ object Parsers {
   import ast.untpd._
 
   case class OpInfo(operand: Tree, operator: Ident, offset: Offset)
-
-  class ParensCounters {
-    private var parCounts = new Array[Int](lastParen - firstParen)
-
-    def count(tok: Token): Int = parCounts(tok - firstParen)
-    def change(tok: Token, delta: Int): Unit = parCounts(tok - firstParen) += delta
-    def nonePositive: Boolean = parCounts forall (_ <= 0)
-  }
 
   enum Location(val inParens: Boolean, val inPattern: Boolean, val inArgs: Boolean):
     case InParens      extends Location(true, false, false)
@@ -173,8 +166,6 @@ object Parsers {
 
     val in: Scanner = new Scanner(source)
 
-    val openParens: ParensCounters = new ParensCounters
-
     /** This is the general parse entry point.
      *  Overridden by ScriptParser
      */
@@ -261,55 +252,14 @@ object Parsers {
     }
 
     /** Skip on error to next safe point.
-     *  Safe points are:
-     *   - Closing braces, provided they match an opening brace before the error point.
-     *   - Closing parens and brackets, provided they match an opening parent or bracket
-     *     before the error point and there are no intervening other kinds of parens.
-     *   - Semicolons and newlines, provided there are no intervening braces.
-     *   - Definite statement starts on new lines, provided they are not more indented
-     *     than the last known statement start before the error point.
      */
-    protected def skip(): Unit = {
-      val skippedParens = new ParensCounters
-      while (true) {
-        (in.token: @switch) match {
-          case EOF =>
-            return
-          case SEMI | NEWLINE | NEWLINES =>
-            if (skippedParens.count(LBRACE) == 0) return
-          case RBRACE =>
-            if (openParens.count(LBRACE) > 0 && skippedParens.count(LBRACE) == 0)
-              return
-            skippedParens.change(LBRACE, -1)
-          case RPAREN =>
-            if (openParens.count(LPAREN) > 0 && skippedParens.nonePositive)
-              return
-            skippedParens.change(LPAREN, -1)
-          case RBRACKET =>
-            if (openParens.count(LBRACKET) > 0 && skippedParens.nonePositive)
-              return
-            skippedParens.change(LBRACKET, -1)
-          case OUTDENT =>
-            if (openParens.count(INDENT) > 0 && skippedParens.count(INDENT) == 0)
-              return
-            skippedParens.change(INDENT, -1)
-          case LBRACE =>
-            skippedParens.change(LBRACE, +1)
-          case LPAREN =>
-            skippedParens.change(LPAREN, +1)
-          case LBRACKET=>
-            skippedParens.change(LBRACKET, +1)
-          case INDENT =>
-            skippedParens.change(INDENT, +1)
-          case _ =>
-            if (mustStartStat &&
-                in.isAfterLineEnd &&
-                isLeqIndented(in.offset, lastStatOffset max 0))
-              return
-        }
+    protected def skip(): Unit =
+      val lastRegion = in.currentRegion
+      def atStop =
+        in.token == EOF
+        || skipStopTokens.contains(in.token) && (in.currentRegion eq lastRegion)
+      while !atStop do
         in.nextToken()
-      }
-    }
 
     def warning(msg: Message, sourcePos: SourcePosition): Unit =
       report.warning(msg, sourcePos)
@@ -364,11 +314,15 @@ object Parsers {
       if in.isNewLine then in.nextToken() else accept(SEMI)
 
     def acceptStatSepUnlessAtEnd[T <: Tree](stats: ListBuffer[T], altEnd: Token = EOF): Unit =
+      def skipEmptyStats(): Unit =
+        while (in.token == SEMI || in.token == NEWLINE || in.token == NEWLINES) do in.nextToken()
+
       in.observeOutdented()
       in.token match
         case SEMI | NEWLINE | NEWLINES =>
-          in.nextToken()
+          skipEmptyStats()
           checkEndMarker(stats)
+          skipEmptyStats()
         case `altEnd` =>
         case _ =>
           if !isStatSeqEnd then
@@ -492,20 +446,19 @@ object Parsers {
      *  Parameters appear in reverse order.
      */
     var placeholderParams: List[ValDef] = Nil
+    var languageImportContext: Context = ctx
 
-    def checkNoEscapingPlaceholders[T](op: => T): T = {
+    def checkNoEscapingPlaceholders[T](op: => T): T =
       val savedPlaceholderParams = placeholderParams
+      val savedLanguageImportContext = languageImportContext
       placeholderParams = Nil
-
       try op
-      finally {
-        placeholderParams match {
+      finally
+        placeholderParams match
           case vd :: _ => syntaxError(UnboundPlaceholderParameter(), vd.span)
           case _ =>
-        }
         placeholderParams = savedPlaceholderParams
-      }
-    }
+        languageImportContext = savedLanguageImportContext
 
     def isWildcard(t: Tree): Boolean = t match {
       case Ident(name1) => placeholderParams.nonEmpty && name1 == placeholderParams.head.name
@@ -553,15 +506,9 @@ object Parsers {
 
 /* -------- COMBINATORS -------------------------------------------------------- */
 
-    def enclosed[T](tok: Token, body: => T): T = {
+    def enclosed[T](tok: Token, body: => T): T =
       accept(tok)
-      openParens.change(tok, 1)
-      try body
-      finally {
-        accept(tok + 1)
-        openParens.change(tok, -1)
-      }
-    }
+      try body finally accept(tok + 1)
 
     def inParens[T](body: => T): T = enclosed(LPAREN, body)
     def inBraces[T](body: => T): T = enclosed(LBRACE, body)
@@ -1193,17 +1140,19 @@ object Parsers {
             in.nextToken()
             Quote(t)
           }
-          else {
-            report.errorOrMigrationWarning(
-              em"""symbol literal '${in.name} is no longer supported,
-                  |use a string literal "${in.name}" or an application Symbol("${in.name}") instead,
-                  |or enclose in braces '{${in.name}} if you want a quoted expression.""",
-              in.sourcePos())
-            if migrateTo3 then
-              patch(source, Span(in.offset, in.offset + 1), "Symbol(\"")
-              patch(source, Span(in.charOffset - 1), "\")")
+          else
+            if !symbolLiteralsEnabled(using languageImportContext) then
+              report.errorOrMigrationWarning(
+                em"""symbol literal '${in.name} is no longer supported,
+                    |use a string literal "${in.name}" or an application Symbol("${in.name}") instead,
+                    |or enclose in braces '{${in.name}} if you want a quoted expression.
+                    |For now, you can also `import language.deprecated.symbolLiterals` to accept
+                    |the idiom, but this possibility might no longer be available in the future.""",
+                in.sourcePos())
+              if migrateTo3 then
+                patch(source, Span(in.offset, in.offset + 1), "Symbol(\"")
+                patch(source, Span(in.charOffset - 1), "\")")
             atSpan(in.skipToken()) { SymbolLit(in.strVal) }
-          }
         else if (in.token == INTERPOLATIONID) interpolatedString(inPattern)
         else {
           val t = literalOf(in.token)
@@ -1425,7 +1374,6 @@ object Parsers {
             functionRest(Nil)
           }
           else {
-            openParens.change(LPAREN, 1)
             imods = modifiers(funTypeArgMods)
             val paramStart = in.offset
             val ts = funArgType() match {
@@ -1437,7 +1385,6 @@ object Parsers {
               case t =>
                 funArgTypesRest(t, funArgType)
             }
-            openParens.change(LPAREN, -1)
             accept(RPAREN)
             if isValParamList || in.token == ARROW || in.token == CTXARROW then
               functionRest(ts)
@@ -1625,7 +1572,7 @@ object Parsers {
         typeIdent()
       else
         def singletonArgs(t: Tree): Tree =
-          if in.token == LPAREN && dependentEnabled
+          if in.token == LPAREN && dependentEnabled(using languageImportContext)
           then singletonArgs(AppliedTypeTree(t, inParens(commaSeparated(singleton))))
           else t
         singletonArgs(simpleType1())
@@ -1820,7 +1767,7 @@ object Parsers {
         } :: contextBounds(pname)
       case VIEWBOUND =>
         report.errorOrMigrationWarning(
-          "view bounds `<%' are deprecated, use a context bound `:' instead",
+          "view bounds `<%' are no longer supported, use a context bound `:' instead",
           in.sourcePos())
         atSpan(in.skipToken()) {
           Function(Ident(pname) :: Nil, toplevelTyp())
@@ -2080,10 +2027,10 @@ object Parsers {
           val isVarargSplice = location.inArgs && followingIsVararg()
           in.nextToken()
           if isVarargSplice then
-            if sourceVersion.isAtLeast(future) then
-              report.errorOrMigrationWarning(
-                em"The syntax `x: _*` is no longer supported for vararg splices; use `x*` instead${rewriteNotice("future")}",
-                in.sourcePos(uscoreStart))
+            report.errorOrMigrationWarning(
+              em"The syntax `x: _*` is no longer supported for vararg splices; use `x*` instead${rewriteNotice("future")}",
+              in.sourcePos(uscoreStart),
+              future)
             if sourceVersion == `future-migration` then
               patch(source, Span(t.span.end, in.lastOffset), " *")
           else if opStack.nonEmpty then
@@ -2145,25 +2092,21 @@ object Parsers {
         if in.token == RPAREN then
           Nil
         else
-          openParens.change(LPAREN, 1)
           var mods1 = mods
           if in.token == ERASED then mods1 = addModifier(mods1)
           try
             commaSeparated(() => binding(mods1))
           finally
             accept(RPAREN)
-            openParens.change(LPAREN, -1)
       else {
         val start = in.offset
         val name = bindingName()
         val t =
           if (in.token == COLON && location == Location.InBlock) {
-            if sourceVersion.isAtLeast(future) then
-                // Don't error in non-strict mode, as the alternative syntax "implicit (x: T) => ... "
-                // is not supported by Scala2.x
-              report.errorOrMigrationWarning(
-                s"This syntax is no longer supported; parameter needs to be enclosed in (...)${rewriteNotice("future")}",
-                source.atSpan(Span(start, in.lastOffset)))
+            report.errorOrMigrationWarning(
+              s"This syntax is no longer supported; parameter needs to be enclosed in (...)${rewriteNotice("future")}",
+              source.atSpan(Span(start, in.lastOffset)),
+              from = future)
             in.nextToken()
             val t = infixType()
             if (sourceVersion == `future-migration`) {
@@ -2500,7 +2443,6 @@ object Parsers {
         val enums =
           if (leading == LBRACE || leading == LPAREN && followingIsEnclosedGenerators()) {
             in.nextToken()
-            openParens.change(leading, 1)
             val res =
               if (leading == LBRACE || in.token == CASE)
                 enumerators()
@@ -2510,7 +2452,6 @@ object Parsers {
                   if (in.token == RPAREN || pats.length > 1) {
                     wrappedEnums = false
                     accept(RPAREN)
-                    openParens.change(LPAREN, -1)
                     atSpan(start) { makeTupleOrParens(pats) } // note: alternatives `|' need to be weeded out by typer.
                   }
                   else pats.head
@@ -2519,7 +2460,6 @@ object Parsers {
             if (wrappedEnums) {
               val closingOnNewLine = in.isAfterLineEnd
               accept(leading + 1)
-              openParens.change(leading, -1)
               def hasMultiLineEnum =
                 res.exists { t =>
                   val pos = t.sourcePos
@@ -2628,13 +2568,19 @@ object Parsers {
         ascription(p, location)
       else p
 
-    /**  Pattern3    ::=  InfixPattern [‘*’]
+    /**  Pattern3    ::=  InfixPattern
+     *                 |  PatVar ‘*’
      */
     def pattern3(): Tree =
       val p = infixPattern()
       if followingIsVararg() then
         atSpan(in.skipToken()) {
-          Typed(p, Ident(tpnme.WILDCARD_STAR))
+          p match
+            case p @ Ident(name) if name.isVarPattern =>
+              Typed(p, Ident(tpnme.WILDCARD_STAR))
+            case _ =>
+              syntaxError(em"`*` must follow pattern variable")
+              p
         }
       else p
 
@@ -2655,10 +2601,10 @@ object Parsers {
         p
 
     private def warnStarMigration(p: Tree) =
-      if sourceVersion.isAtLeast(future) then
-        report.errorOrMigrationWarning(
-          em"The syntax `x: _*` is no longer supported for vararg splices; use `x*` instead",
-          in.sourcePos(startOffset(p)))
+      report.errorOrMigrationWarning(
+        em"The syntax `x: _*` is no longer supported for vararg splices; use `x*` instead",
+        in.sourcePos(startOffset(p)),
+        from = future)
 
     /**  InfixPattern ::= SimplePattern {id [nl] SimplePattern}
      */
@@ -2726,7 +2672,7 @@ object Parsers {
       if (in.token == RPAREN) Nil else patterns(location)
 
     /** ArgumentPatterns  ::=  ‘(’ [Patterns] ‘)’
-     *                      |  ‘(’ [Patterns ‘,’] Pattern2 ‘*’ ‘)’
+     *                      |  ‘(’ [Patterns ‘,’] PatVar ‘*’ ‘)’
      */
     def argumentPatterns(): List[Tree] =
       inParens(patternsOpt(Location.InPatternArgs))
@@ -3084,7 +3030,9 @@ object Parsers {
 
     /** Create an import node and handle source version imports */
     def mkImport(outermost: Boolean = false): ImportConstr = (tree, selectors) =>
+      val imp = Import(tree, selectors)
       if isLanguageImport(tree) then
+        languageImportContext = languageImportContext.importContext(imp, NoSymbol)
         for
           case ImportSelector(id @ Ident(imported), EmptyTree, _) <- selectors
           if allSourceVersionNames.contains(imported)
@@ -3095,7 +3043,7 @@ object Parsers {
             syntaxError(i"duplicate source version import", id.span)
           else
             ctx.compilationUnit.sourceVersion = Some(SourceVersion.valueOf(imported.toString))
-      Import(tree, selectors)
+      imp
 
     /** ImportExpr       ::=  SimpleRef {‘.’ id} ‘.’ ImportSpec
      *                     |  SimpleRef ‘as’ id
@@ -3113,8 +3061,9 @@ object Parsers {
       def wildcardSelector() =
         if in.token == USCORE && sourceVersion.isAtLeast(future) then
           report.errorOrMigrationWarning(
-            em"`_` is no longer supported for a wildcard import; use `*` instead${rewriteNotice("3.1")}",
-            in.sourcePos())
+            em"`_` is no longer supported for a wildcard import; use `*` instead${rewriteNotice("future")}",
+            in.sourcePos(),
+            from = future)
           patch(source, Span(in.offset, in.offset + 1), "*")
         ImportSelector(atSpan(in.skipToken()) { Ident(nme.WILDCARD) })
 
@@ -3131,8 +3080,9 @@ object Parsers {
         if in.token == ARROW || isIdent(nme.as) then
           if in.token == ARROW && sourceVersion.isAtLeast(future) then
             report.errorOrMigrationWarning(
-              em"The import renaming `a => b` is no longer supported ; use `a as b` instead${rewriteNotice("3.1")}",
-              in.sourcePos())
+              em"The import renaming `a => b` is no longer supported ; use `a as b` instead${rewriteNotice("future")}",
+              in.sourcePos(),
+              from = future)
             patch(source, Span(in.offset, in.offset + 2),
                 if testChar(in.offset - 1, ' ') && testChar(in.offset + 2, ' ') then "as"
                 else " as ")

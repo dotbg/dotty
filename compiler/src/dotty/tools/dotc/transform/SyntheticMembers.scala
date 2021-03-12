@@ -92,7 +92,7 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
     lazy val accessors =
       if (isDerivedValueClass(clazz)) clazz.paramAccessors.take(1) // Tail parameters can only be `erased`
       else clazz.caseAccessors
-    val isEnumValue = clazz.isAnonymousClass && clazz.classParents.head.classSymbol.is(Enum)
+    val isEnumValue = clazz.isAnonymousClass && clazz.info.parents.head.classSymbol.is(Enum)
     val isSimpleEnumValue = isEnumValue && !clazz.owner.isAllOf(EnumCase)
     val isJavaEnumValue = isEnumValue && clazz.derivesFrom(defn.JavaEnumClass)
     val isNonJavaEnumValue = isEnumValue && !isJavaEnumValue
@@ -210,8 +210,7 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
       // Second constructor of ioob that takes a String argument
       def filterStringConstructor(s: Symbol): Boolean = s.info match {
         case m: MethodType if s.isConstructor && m.paramInfos.size == 1 =>
-          val pinfo = if (ctx.explicitNulls) m.paramInfos.head.stripUncheckedNull else m.paramInfos.head
-          pinfo == defn.StringType
+          m.paramInfos.head.stripNull == defn.StringType
         case _ => false
       }
       val constructor = ioob.typeSymbol.info.decls.find(filterStringConstructor _).asTerm
@@ -385,12 +384,12 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
 
   private def hasWriteReplace(clazz: ClassSymbol)(using Context): Boolean =
     clazz.membersNamed(nme.writeReplace)
-      .filterWithPredicate(s => s.signature == Signature(defn.AnyRefType, isJava = false))
+      .filterWithPredicate(s => s.signature == Signature(defn.AnyRefType, sourceLanguage = SourceLanguage.Scala3))
       .exists
 
   private def hasReadResolve(clazz: ClassSymbol)(using Context): Boolean =
     clazz.membersNamed(nme.readResolve)
-      .filterWithPredicate(s => s.signature == Signature(defn.AnyRefType, isJava = false))
+      .filterWithPredicate(s => s.signature == Signature(defn.AnyRefType, sourceLanguage = SourceLanguage.Scala3))
       .exists
 
   private def writeReplaceDef(clazz: ClassSymbol)(using Context): TermSymbol =
@@ -428,7 +427,7 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
 
   /** Is this an anonymous class deriving from an enum definition? */
   extension (cls: ClassSymbol) private def isEnumValueImplementation(using Context): Boolean =
-    cls.isAnonymousClass && cls.classParents.head.typeSymbol.is(Enum) // asserted in Typer
+    cls.isAnonymousClass && cls.info.parents.head.typeSymbol.is(Enum) // asserted in Typer
 
   /** If this is the class backing a serializable singleton enum value with base class `MyEnum`,
    *  and not deriving from `java.lang.Enum` add the method:
@@ -546,7 +545,7 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
       newParents = newParents :+ TypeTree(parent)
       val oldClassInfo = clazz.classInfo
       val newClassInfo = oldClassInfo.derivedClassInfo(
-        classParents = oldClassInfo.classParents :+ parent)
+        declaredParents = oldClassInfo.declaredParents :+ parent)
       clazz.copySymDenotation(info = newClassInfo).installAfter(thisPhase)
     }
     def addMethod(name: TermName, info: Type, cls: Symbol, body: (Symbol, Tree) => Context ?=> Tree): Unit = {

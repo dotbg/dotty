@@ -47,7 +47,14 @@ private[repl] class Rendering(parentClassLoader: Option[ClassLoader] = None) {
     else {
       val parent = parentClassLoader.getOrElse {
         val compilerClasspath = ctx.platform.classPath(using ctx).asURLs
-        new java.net.URLClassLoader(compilerClasspath.toArray, null)
+        // We can't use the system classloader as a parent because it would
+        // pollute the user classpath with everything passed to the JVM
+        // `-classpath`. We can't use `null` as a parent either because on Java
+        // 9+ that's the bootstrap classloader which doesn't contain modules
+        // like `java.sql`, so we use the parent of the system classloader,
+        // which should correspond to the platform classloader on Java 9+.
+        val baseClassLoader = ClassLoader.getSystemClassLoader.getParent
+        new java.net.URLClassLoader(compilerClasspath.toArray, baseClassLoader)
       }
 
       myClassLoader = new AbstractFileClassLoader(ctx.settings.outputDir.value, parent)
@@ -64,11 +71,24 @@ private[repl] class Rendering(parentClassLoader: Option[ClassLoader] = None) {
       myClassLoader
     }
 
+  /** Used to elide long output in replStringOf.
+   *
+   * TODO: Perhaps implement setting scala.repl.maxprintstring as in Scala 2, but
+   * then this bug will surface, so perhaps better not?
+   * https://github.com/scala/bug/issues/12337
+   */
+  private[repl] def truncate(str: String): String = {
+    val showTruncated = " ... large output truncated, print value to show all"
+    val ncp = str.codePointCount(0, str.length) // to not cut inside code point
+    if ncp <= MaxStringElements then str
+    else str.substring(0, str.offsetByCodePoints(0, MaxStringElements - 1)) + showTruncated
+  }
+
   /** Return a String representation of a value we got from `classLoader()`. */
   private[repl] def replStringOf(value: Object)(using Context): String = {
     assert(myReplStringOf != null,
       "replStringOf should only be called on values creating using `classLoader()`, but `classLoader()` has not been called so far")
-    myReplStringOf(value)
+    truncate(myReplStringOf(value))
   }
 
   /** Load the value of the symbol using reflection.

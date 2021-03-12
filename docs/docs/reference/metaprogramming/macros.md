@@ -3,6 +3,8 @@ layout: doc-page
 title: "Macros"
 ---
 
+> When developing macros enable `-Xcheck-macros` scalac option flag to have extra runtime checks.
+
 ## Macros: Quotes and Splices
 
 Macros are built on two well-known fundamental operations: quotation and
@@ -560,7 +562,7 @@ then it will splice `sum`:
 val arr: Array[Int] = Array.apply(1, [2,3 : Int]:Int*)
 
 var sum = 0
-${ map(arr, x => '{sum += $x}) }
+${ map('arr, x => '{sum += $x}) }
 sum
 ```
 
@@ -571,7 +573,7 @@ val arr: Array[Int] = Array.apply(1, [2,3 : Int]:Int*)
 
 var sum = 0
 val f = x => '{sum += $x}
-${ _root_.Macros.map(arr, 'f)('[Int])}
+${ _root_.Macros.map('arr, 'f)('[Int])}
 sum
 ```
 

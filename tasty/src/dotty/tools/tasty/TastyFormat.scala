@@ -165,7 +165,7 @@ Standard-Section: "ASTs" TopLevelStat*
                   ORtype         Length left_Type right_Type                       -- lefgt | right
                   MATCHtype      Length bound_Type sel_Type case_Type*             -- sel match {cases} with optional upper `bound`
                   MATCHCASEtype  Length pat_type rhs_Type                          -- match cases are MATCHCASEtypes or TYPELAMBDAtypes over MATCHCASEtypes
-                  BIND           Length boundName_NameRef bounds_Type              -- boundName @ bounds,  for type-variables defined in a type pattern
+                  BIND           Length boundName_NameRef bounds_Type Modifier*    -- boundName @ bounds,  for type-variables defined in a type pattern
                   BYNAMEtype            underlying_Type                            -- => underlying
                   PARAMtype      Length binder_ASTRef paramNum_Nat                 -- A reference to parameter # paramNum in lambda type `binder`
                   POLYtype       Length result_Type TypesNames                     -- A polymorphic method type `[TypesNames]result`, used in refinements
@@ -212,6 +212,7 @@ Standard-Section: "ASTs" TopLevelStat*
                   PARAMalias                                                       -- Parameter is alias of a superclass parameter
                   EXPORTED                                                         -- An export forwarder
                   OPEN                                                             -- an open class
+                  INVISIBLE                                                        -- invisible during typechecking
                   Annotation
 
   Variance      = STABLE                                                           -- invariant
@@ -300,7 +301,7 @@ object TastyFormat {
    * is able to read final TASTy documents if the file's
    * `MinorVersion` is strictly less than the current value.
    */
-  final val ExperimentalVersion: Int = 1
+  final val ExperimentalVersion: Int = 2
 
   /**This method implements a binary relation (`<:<`) between two TASTy versions.
    * We label the lhs `file` and rhs `compiler`.
@@ -334,6 +335,7 @@ object TastyFormat {
    *   else invariant[file.experimental is non-0 and different than compiler.experimental]
    *     return incompatible
    * ```
+   * @syntax markdown
    */
   def isVersionCompatible(
     fileMajor: Int,
@@ -472,8 +474,9 @@ object TastyFormat {
   final val PARAMalias = 41
   final val TRANSPARENT = 42
   final val INFIX = 43
-  final val EMPTYCLAUSE = 44
-  final val SPLITCLAUSE = 45
+  final val INVISIBLE = 44
+  final val EMPTYCLAUSE = 45
+  final val SPLITCLAUSE = 46
 
   // Cat. 2:    tag Nat
 
@@ -636,6 +639,7 @@ object TastyFormat {
        | PARAMalias
        | EXPORTED
        | OPEN
+       | INVISIBLE
        | ANNOTATION
        | PRIVATEqualified
        | PROTECTEDqualified => true
@@ -698,6 +702,7 @@ object TastyFormat {
     case PARAMsetter => "PARAMsetter"
     case EXPORTED => "EXPORTED"
     case OPEN => "OPEN"
+    case INVISIBLE => "INVISIBLE"
     case PARAMalias => "PARAMalias"
     case EMPTYCLAUSE => "EMPTYCLAUSE"
     case SPLITCLAUSE => "SPLITCLAUSE"

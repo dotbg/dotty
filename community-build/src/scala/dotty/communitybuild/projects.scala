@@ -39,26 +39,6 @@ def exec(projectDir: Path, binary: String, arguments: String*): Int =
   exitCode
 
 
-/** Versions of published projects, needs to be updated when a project in the build is updated.
- *
- *  TODO: instead of harcoding these numbers, we could get them from the
- *  projects themselves. This likely requires injecting a custom task in the
- *  projects to output the version number to a file.
- */
-object Versions:
-  val cats = "2.3.1-SNAPSHOT"
-  val catsMtl = "1.1+DOTTY-SNAPSHOT"
-  val coop = "1.0+DOTTY-SNAPSHOT"
-  val discipline = "1.1.3-SNAPSHOT"
-  val disciplineMunit = "1.0.3+DOTTY-SNAPSHOT"
-  val disciplineSpecs2 = "1.1.3-SNAPSHOT"
-  val izumiReflect = "1.0.0-SNAPSHOT"
-  val scalacheck = "1.15.2-SNAPSHOT"
-  val scalatest = "3.2.3"
-  val munit = "0.7.19+DOTTY-SNAPSHOT"
-  val scodecBits = "1.1+DOTTY-SNAPSHOT"
-  val simulacrumScalafix = "0.5.1-SNAPSHOT"
-
 sealed trait CommunityProject:
   private var published = false
 
@@ -122,58 +102,17 @@ final case class SbtCommunityProject(
     extraSbtArgs: List[String] = Nil,
     dependencies: List[CommunityProject] = Nil,
     sbtPublishCommand: String = null,
-    sbtDocCommand: String = null
+    sbtDocCommand: String = null,
+    scalacOptions: List[String] = SbtCommunityProject.scalacOptions
   ) extends CommunityProject:
   override val binaryName: String = "sbt"
 
-  // A project in the community build can depend on an arbitrary version of
-  // another project in the build, so we force the use of the version that is
-  // actually in the community build.
-  val dependencyOverrides = List(
-    // dependencyOverrides doesn't seem to understand `%%%`
-    s""""org.scalacheck" %% "scalacheck" % "${Versions.scalacheck}"""",
-    s""""org.scalacheck" %% "scalacheck_sjs1" % "${Versions.scalacheck}"""",
-    s""""org.scalatest" %% "scalatest" % "${Versions.scalatest}"""",
-    s""""org.scalatest" %% "scalatest_sjs1" % "${Versions.scalatest}"""",
-    s""""org.scalameta" %% "munit" % "${Versions.munit}"""",
-    s""""org.scalameta" %% "munit_sjs1" % "${Versions.munit}"""",
-    s""""org.scalameta" %% "munit-scalacheck" % "${Versions.munit}"""",
-    s""""org.scalameta" %% "munit-scalacheck_sjs1" % "${Versions.munit}"""",
-    s""""org.scalameta" %% "junit-interface" % "${Versions.munit}"""",
-    s""""org.scodec" %% "scodec-bits" % "${Versions.scodecBits}"""",
-    s""""org.scodec" %% "scodec-bits_sjs1" % "${Versions.scodecBits}"""",
-    s""""org.typelevel" %% "discipline-core" % "${Versions.discipline}"""",
-    s""""org.typelevel" %% "discipline-core_sjs1" % "${Versions.discipline}"""",
-    s""""org.typelevel" %% "discipline-munit" % "${Versions.disciplineMunit}"""",
-    s""""org.typelevel" %% "discipline-munit_sjs1" % "${Versions.disciplineMunit}"""",
-    s""""org.typelevel" %% "discipline-specs2" % "${Versions.disciplineSpecs2}"""",
-    s""""org.typelevel" %% "discipline-specs2_sjs1" % "${Versions.disciplineSpecs2}"""",
-    s""""org.typelevel" %% "simulacrum-scalafix-annotations" % "${Versions.simulacrumScalafix}"""",
-    s""""org.typelevel" %% "simulacrum-scalafix-annotations_sjs1" % "${Versions.simulacrumScalafix}"""",
-    s""""org.typelevel" %% "cats-core" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-core_sjs1" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-free" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-free_sjs1" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-kernel" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-kernel_sjs1" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-kernel-laws" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-kernel-laws_sjs1" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-laws" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-laws_sjs1" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-testkit" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-testkit_sjs1" % "${Versions.cats}"""",
-    s""""org.typelevel" %% "cats-mtl" % "${Versions.catsMtl}"""",
-    s""""org.typelevel" %% "cats-mtl_sjs1" % "${Versions.catsMtl}"""",
-    s""""org.typelevel" %% "cats-mtl-laws" % "${Versions.catsMtl}"""",
-    s""""org.typelevel" %% "cats-mtl-laws_sjs1" % "${Versions.catsMtl}"""",
-    s""""org.typelevel" %% "coop" % "${Versions.coop}"""",
-    s""""org.typelevel" %% "coop_sjs1" % "${Versions.coop}"""",
-    s""""dev.zio" %% "izumi-reflect" % "${Versions.izumiReflect}"""",
-  )
+  private def scalacOptionsString: String =
+    scalacOptions.map("\"" + _ + "\"").mkString("List(", ",", ")")
 
   private val baseCommand =
     "clean; set logLevel in Global := Level.Error; set updateOptions in Global ~= (_.withLatestSnapshots(false)); "
-    ++ s"""set dependencyOverrides in ThisBuild ++= ${dependencyOverrides.mkString("Seq(", ", ", ")")}; """
+    ++ (if scalacOptions.isEmpty then "" else s"""set scalacOptions in Global ++= $scalacOptionsString;""")
     ++ s"++$compilerVersion!; "
 
   override val testCommand =
@@ -195,9 +134,16 @@ final case class SbtCommunityProject(
       case _ => Nil
     extraSbtArgs ++ sbtProps ++ List(
       "-sbt-version", "1.4.7",
-       "-Dsbt.supershell=false",
+      "-Dsbt.supershell=false",
+      s"-Ddotty.communitybuild.dir=$communitybuildDir",
       s"--addPluginSbtFile=$sbtPluginFilePath"
     )
+
+object SbtCommunityProject:
+  def scalacOptions = List(
+    "-Xcheck-macros",
+    "-Ysafe-init",
+  )
 
 object projects:
 
@@ -254,6 +200,18 @@ object projects:
     dependencies = List(geny, utest)
   )
 
+  lazy val upickleImplicits = MillCommunityProject(
+    project = "upickle",
+    baseCommand = s"implicits.jvm[$compilerVersion]",
+    dependencies = List(upickleCore, ujson)
+  )
+
+  lazy val upack = MillCommunityProject(
+    project = "upickle",
+    baseCommand = s"upack.jvm[$compilerVersion]",
+    dependencies = List(ujson, upickleCore)
+  )
+
   lazy val geny = MillCommunityProject(
     project = "geny",
     baseCommand = s"geny.jvm[$compilerVersion]",
@@ -278,6 +236,12 @@ object projects:
     project = "requests-scala",
     baseCommand = s"requests[$compilerVersion]",
     dependencies = List(geny, utest, ujson, upickleCore)
+  )
+
+  lazy val cask = MillCommunityProject(
+    project = "cask",
+    baseCommand = s"cask[$compilerVersion]",
+    dependencies = List(utest, geny, sourcecode, pprint, upickle, upickleImplicits, upack, requests)
   )
 
   lazy val scas = MillCommunityProject(
@@ -384,7 +348,8 @@ object projects:
   lazy val shapeless = SbtCommunityProject(
     project       = "shapeless",
     sbtTestCommand   = "test",
-    sbtDocCommand = forceDoc("typeable", "deriving", "data")
+    sbtDocCommand = forceDoc("typeable", "deriving", "data"),
+    scalacOptions = Nil // disable -Ysafe-init, due to -Xfatal-warnings
   )
 
   lazy val xmlInterpolator = SbtCommunityProject(
@@ -419,6 +384,7 @@ object projects:
     project       = "sconfig",
     sbtTestCommand   = "sconfigJVM/test",
     sbtDocCommand = "sconfigJVM/doc",
+    dependencies = List(scalaCollectionCompat)
   )
 
   lazy val zio = SbtCommunityProject(
@@ -431,8 +397,7 @@ object projects:
   lazy val munit = SbtCommunityProject(
     project = "munit",
     sbtTestCommand  = "testsJVM/test;testsJS/test;",
-    // Hardcode the version to avoid having to deal with something set by sbt-dynver
-    sbtPublishCommand   = s"""set every version := "${Versions.munit}"; munitJVM/publishLocal; munitJS/publishLocal; munitScalacheckJVM/publishLocal; munitScalacheckJS/publishLocal; junit/publishLocal""",
+    sbtPublishCommand = "munitJVM/publishLocal; munitJS/publishLocal; munitScalacheckJVM/publishLocal; munitScalacheckJS/publishLocal; junit/publishLocal",
     sbtDocCommand   = "junit/doc; munitJVM/doc",
     dependencies = List(scalacheck)
   )
@@ -440,8 +405,7 @@ object projects:
   lazy val scodecBits = SbtCommunityProject(
     project          = "scodec-bits",
     sbtTestCommand   = "coreJVM/test;coreJS/test",
-    // Hardcode the version to avoid having to deal with something set by sbt-git
-    sbtPublishCommand = s"""set every version := "${Versions.scodecBits}"; coreJVM/publishLocal;coreJS/publishLocal""",
+    sbtPublishCommand = "coreJVM/publishLocal;coreJS/publishLocal",
     sbtDocCommand   = "coreJVM/doc",
     dependencies = List(munit)
   )
@@ -517,12 +481,14 @@ object projects:
   lazy val scalaCollectionCompat = SbtCommunityProject(
     project        = "scala-collection-compat",
     sbtTestCommand = "compat30/test",
+    sbtPublishCommand = "compat30/publishLocal",
   )
 
   lazy val verify = SbtCommunityProject(
     project        = "verify",
     sbtTestCommand = "verifyJVM/test",
     sbtDocCommand = "verifyJVM/doc",
+    scalacOptions = SbtCommunityProject.scalacOptions.filter(_ != "-Xcheck-macros") // TODO enable -Xcheck-macros
   )
 
   lazy val discipline = SbtCommunityProject(
@@ -535,7 +501,7 @@ object projects:
   lazy val disciplineMunit = SbtCommunityProject(
     project = "discipline-munit",
     sbtTestCommand = "test",
-    sbtPublishCommand = s"""set every version := "${Versions.disciplineMunit}";coreJVM/publishLocal;coreJS/publishLocal""",
+    sbtPublishCommand = "coreJVM/publishLocal;coreJS/publishLocal",
     dependencies = List(discipline, munit)
   )
 
@@ -543,7 +509,8 @@ object projects:
     project = "discipline-specs2",
     sbtTestCommand = "test",
     sbtPublishCommand = "coreJVM/publishLocal;coreJS/publishLocal",
-    dependencies = List(discipline)
+    dependencies = List(discipline),
+    scalacOptions = SbtCommunityProject.scalacOptions.filter(_ != "-Ysafe-init")
   )
 
   lazy val simulacrumScalafixAnnotations = SbtCommunityProject(
@@ -556,20 +523,22 @@ object projects:
     project = "cats",
     sbtTestCommand = "set scalaJSStage in Global := FastOptStage;buildJVM;validateAllJS",
     sbtPublishCommand = "catsJVM/publishLocal;catsJS/publishLocal",
-    dependencies = List(discipline, disciplineMunit, scalacheck, simulacrumScalafixAnnotations)
+    dependencies = List(discipline, disciplineMunit, scalacheck, simulacrumScalafixAnnotations),
+    scalacOptions = SbtCommunityProject.scalacOptions.filter(_ != "-Ysafe-init") // disable -Ysafe-init, due to -Xfatal-warning
+
   )
 
   lazy val catsMtl = SbtCommunityProject(
     project = "cats-mtl",
     sbtTestCommand = "testsJVM/test;testsJS/test",
-    sbtPublishCommand = s"""set every version := "${Versions.catsMtl}";coreJVM/publishLocal;coreJS/publishLocal;lawsJVM/publishLocal;lawsJS/publishLocal""",
+    sbtPublishCommand = "coreJVM/publishLocal;coreJS/publishLocal;lawsJVM/publishLocal;lawsJS/publishLocal",
     dependencies = List(cats, disciplineMunit)
   )
 
   lazy val coop = SbtCommunityProject(
     project = "coop",
     sbtTestCommand = "test",
-    sbtPublishCommand = s"""set every version := "${Versions.coop}";coreJVM/publishLocal;coreJS/publishLocal""",
+    sbtPublishCommand = "coreJVM/publishLocal;coreJS/publishLocal",
     dependencies = List(cats, catsMtl)
   )
 
@@ -671,6 +640,19 @@ object projects:
     project = "Monocle",
     sbtTestCommand = "monocleJVM/test",
     dependencies = List(cats, munit, discipline, disciplineMunit)
+  lazy val protoquill = SbtCommunityProject(
+    project = "protoquill",
+    sbtTestCommand = "test",
+    sbtPublishCommand = "publishLocal",
+    dependencies = List(), // TODO add scalatest and pprint (see protoquill/build.sbt)
+    scalacOptions = List("-language:implicitConversions"), // disabled -Ysafe-init, due to bug in macro
+  )
+
+  lazy val onnxScala = SbtCommunityProject(
+    project = "onnx-scala",
+    sbtTestCommand = "test",
+    sbtPublishCommand = "publishLocal",
+    dependencies = List(scalatest)
   )
 
 end projects
@@ -683,10 +665,13 @@ def allProjects = List(
   projects.ujson,
   projects.upickle,
   projects.upickleCore,
+  projects.upickleImplicits,
+  projects.upack,
   projects.geny,
   projects.fansi,
   projects.pprint,
   projects.requests,
+  projects.cask,
   projects.scas,
   projects.intent,
   projects.algebra,
@@ -739,6 +724,8 @@ def allProjects = List(
   projects.perspective,
   projects.akka,
   projects.monocle,
+  projects.protoquill,
+  projects.onnxScala,
 )
 
 lazy val projectMap = allProjects.groupBy(_.project)

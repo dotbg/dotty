@@ -528,10 +528,14 @@ class TreePickler(pickler: TastyPickler) {
             }
           }
         case Bind(name, body) =>
-          registerDef(tree.symbol)
+          val sym = tree.symbol
+          registerDef(sym)
           writeByte(BIND)
           withLength {
-            pickleName(name); pickleType(tree.symbol.info); pickleTree(body)
+            pickleName(name)
+            pickleType(sym.info)
+            pickleTree(body)
+            pickleFlags(sym.flags &~ Case, sym.isTerm)
           }
         case Alternative(alts) =>
           writeByte(ALTERNATIVE)
@@ -724,6 +728,7 @@ class TreePickler(pickler: TastyPickler) {
     if (flags.is(Artifact)) writeModTag(ARTIFACT)
     if flags.is(Transparent) then writeModTag(TRANSPARENT)
     if flags.is(Infix) then writeModTag(INFIX)
+    if flags.is(Invisible) then writeModTag(INVISIBLE)
     if (isTerm) {
       if (flags.is(Implicit)) writeModTag(IMPLICIT)
       if (flags.is(Given)) writeModTag(GIVEN)
